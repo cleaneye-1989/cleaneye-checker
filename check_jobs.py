@@ -21,7 +21,9 @@ EMAIL_PASS  = os.environ["EMAIL_PASS"]
 FILTER_FROM = datetime(2026, 1, 1).date()
 
 def normalize(title):
-    return re.sub(r"[\s\W_]+", "", title).lower()
+    title = re.sub(r"\s+", "", title)
+    title = re.sub(r"[^\w가-힣]", "", title)
+    return title.lower()
 
 def parse_date(text):
     try:
