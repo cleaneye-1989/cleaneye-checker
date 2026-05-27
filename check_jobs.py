@@ -1,7 +1,7 @@
 """
 의정부도시공사 채용공고 일치 점검 스크립트
 2026-01-01 이후 게시글만 비교
-클린아이: POST API 직접 호출 (entId=2024000003)
+클린아이: POST HTML 방식 (empHireInfo.do)
 """
 
 import os
@@ -19,14 +19,6 @@ EMAIL_TO    = os.environ["EMAIL_TO"]
 EMAIL_PASS  = os.environ["EMAIL_PASS"]
 
 FILTER_FROM = datetime(2026, 1, 1).date()
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/javascript, */*; q=0.01",
-    "Accept-Language": "ko-KR,ko;q=0.9",
-    "Origin": "https://www.cleaneye.go.kr",
-    "Referer": "https://www.cleaneye.go.kr/user/itemGongsi.do",
-}
 
 def normalize(title):
     return re.sub(r"[\s\W_]+", "", title).lower()
@@ -94,72 +86,73 @@ def fetch_uiuc_jobs():
 
 
 # ─────────────────────────────────────────────
-# 2. 클린아이 (POST API 직접 호출)
+# 2. 클린아이 (POST HTML 방식)
 # ─────────────────────────────────────────────
 def fetch_cleaneye_jobs():
+    url = "https://www.cleaneye.go.kr/user/empHireInfo.do"
+    jobs = []
     session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ko-KR,ko;q=0.9",
+        "Origin": "https://www.cleaneye.go.kr",
+        "Referer": "https://www.cleaneye.go.kr/user/itemGongsi.do",
+        "Content-Type": "application/x-www-form-urlencoded",
+    })
+
     # 메인 페이지 방문으로 쿠키 획득
     try:
-        session.get("https://www.cleaneye.go.kr/user/itemGongsi.do",
-                    headers={"User-Agent": HEADERS["User-Agent"]}, timeout=15)
+        session.get("https://www.cleaneye.go.kr/user/itemGongsi.do", timeout=15)
     except Exception as e:
         print(f"[cleaneye] 메인 접근 오류: {e}")
 
-    api_url = "https://www.cleaneye.go.kr/user/selectNewItemEntList.do"
-    jobs = []
+    for pg in range(1, 20):
+        data = {
+            "pageIndex": pg,
+            "entId": "2024000003",
+            "entName": "의정부도시공사",
+            "fixedYear": "",
+            "num": "",
+        }
+        try:
+            res = session.post(url, data=data, timeout=20)
+            res.raise_for_status()
+        except Exception as e:
+            print(f"[cleaneye] 페이지 {pg} 오류: {e}")
+            break
 
-    try:
-        res = session.post(
-            api_url,
-            data={"entId": "2024000003"},
-            headers=HEADERS,
-            timeout=20
-        )
-        res.raise_for_status()
-        data = res.json()
-    except Exception as e:
-        print(f"[cleaneye] API 오류: {e}")
-        return jobs
+        soup = BeautifulSoup(res.text, "html.parser")
+        rows = soup.select("table tbody tr")
+        if not rows:
+            break
 
-    # JSON 구조 탐색
-    items = []
-    if isinstance(data, list):
-        items = data
-    elif isinstance(data, dict):
-        for key in ["list", "data", "items", "result", "rows"]:
-            if key in data and isinstance(data[key], list):
-                items = data[key]
-                break
-        if not items:
-            # 첫 번째 리스트 값 사용
-            for v in data.values():
-                if isinstance(v, list):
-                    items = v
+        stop = False
+        new_found = False
+        for row in rows:
+            cols = row.find_all("td")
+            if len(cols) < 2:
+                continue
+            a_tag = row.find("a")
+            title = a_tag.get_text(strip=True) if a_tag else cols[1].get_text(strip=True)
+            date_text = ""
+            for col in cols:
+                txt = col.get_text(strip=True)
+                if re.match(r"\d{4}[.\-/]\d{2}[.\-/]\d{2}", txt):
+                    date_text = txt
                     break
 
-    print(f"[cleaneye] API 응답 항목 수: {len(items)}")
-
-    for item in items:
-        # 제목 필드 탐색
-        title = ""
-        for key in ["title", "itemNm", "gongsiNm", "subject", "ttl", "empNm"]:
-            if key in item and item[key]:
-                title = str(item[key]).strip()
+            post_date = parse_date(date_text)
+            if post_date and post_date < FILTER_FROM:
+                stop = True
                 break
 
-        # 날짜 필드 탐색
-        date_text = ""
-        for key in ["regDt", "registDt", "date", "regDate", "createDt", "empDt"]:
-            if key in item and item[key]:
-                date_text = str(item[key])[:10]
-                break
+            if title:
+                jobs.append({"title": title.strip(), "date": date_text})
+                new_found = True
 
-        post_date = parse_date(date_text)
-        if post_date and post_date < FILTER_FROM:
-            continue
-
-        if title:
-            jobs.append({"title": title, "date": date_text})
+        if stop or not new_found:
+            break
 
     print(f"[cleaneye] 수집: {len(jobs)}건 (2026-01-01 이후)")
     return jobs
