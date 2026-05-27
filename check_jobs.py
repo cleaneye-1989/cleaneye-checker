@@ -1,124 +1,156 @@
 """
 의정부도시공사 채용공고 일치 점검 스크립트
-- 출처 A: 의정부도시공사 홈페이지 (uiuc.or.kr)
-- 출처 B: 클린아이 경영공시 (cleaneye.go.kr)
-두 사이트 채용공고 목록을 비교하여 불일치 시 이메일 발송
-Playwright를 사용하여 JS 렌더링 및 403 차단 우회
+2026-01-01 이후 게시글만 비교
 """
 
 import os
 import re
 import json
 import smtplib
+import requests
+from bs4 import BeautifulSoup
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
-# ── 환경변수 (GitHub Secrets) ──────────────────────────────────
-EMAIL_FROM = os.environ["EMAIL_FROM"]
-EMAIL_TO   = os.environ["EMAIL_TO"]
-EMAIL_PASS = os.environ["EMAIL_PASS"]
-# ──────────────────────────────────────────────────────────────
+EMAIL_FROM  = os.environ["EMAIL_FROM"]
+EMAIL_TO    = os.environ["EMAIL_TO"]
+EMAIL_PASS  = os.environ["EMAIL_PASS"]
 
-def normalize(title: str) -> str:
+# 이 날짜 이후 게시글만 비교
+FILTER_FROM = datetime(2026, 1, 1).date()
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ko-KR,ko;q=0.9",
+    "Referer": "https://www.cleaneye.go.kr/",
+}
+
+def normalize(title):
     return re.sub(r"[\s\W_]+", "", title).lower()
+
+def parse_date(text):
+    try:
+        return datetime.strptime(re.sub(r"[./]", "-", text.strip()), "%Y-%m-%d").date()
+    except Exception:
+        return None
 
 
 # ─────────────────────────────────────────────
 # 1. 의정부도시공사 홈페이지
 # ─────────────────────────────────────────────
-def fetch_uiuc_jobs(page):
+def fetch_uiuc_jobs():
     url = "https://www.uiuc.or.kr/companyNotice/employmentPage/employment/list.do"
     jobs = []
-    pg = 1
+    session = requests.Session()
+    session.headers.update(HEADERS)
 
-    while True:
+    for pg in range(1, 20):
         try:
-            page.goto(f"{url}?pageIndex={pg}", timeout=20000)
-            page.wait_for_load_state("networkidle", timeout=15000)
-        except PWTimeout:
-            print(f"[uiuc] 페이지 {pg} 타임아웃")
+            res = session.get(url, params={"pageIndex": pg}, timeout=20)
+            res.raise_for_status()
+        except Exception as e:
+            print(f"[uiuc] 오류: {e}")
             break
 
-        rows = page.query_selector_all("table tbody tr")
+        soup = BeautifulSoup(res.text, "html.parser")
+        rows = soup.select("table tbody tr")
         if not rows:
             break
 
-        new_found = False
+        stop = False
         for row in rows:
-            cells = row.query_selector_all("td")
-            if len(cells) < 2:
+            cols = row.find_all("td")
+            if len(cols) < 2:
                 continue
-            a_tag = row.query_selector("a")
-            title = (a_tag.inner_text().strip() if a_tag
-                     else cells[1].inner_text().strip())
+            a_tag = row.find("a")
+            title = a_tag.get_text(strip=True) if a_tag else cols[1].get_text(strip=True)
             date_text = ""
-            for cell in cells:
-                txt = cell.inner_text().strip()
+            for col in cols:
+                txt = col.get_text(strip=True)
                 if re.match(r"\d{4}[.\-/]\d{2}[.\-/]\d{2}", txt):
                     date_text = txt
                     break
+
+            # 날짜 필터
+            post_date = parse_date(date_text)
+            if post_date and post_date < FILTER_FROM:
+                stop = True
+                break
+
             if title:
                 jobs.append({"title": title, "date": date_text})
-                new_found = True
 
-        if not new_found:
+        if stop:
             break
-        pg += 1
 
-    print(f"[uiuc] 수집: {len(jobs)}건")
+    print(f"[uiuc] 수집: {len(jobs)}건 (2026-01-01 이후)")
     return jobs
 
 
 # ─────────────────────────────────────────────
-# 2. 클린아이 (의정부도시공사 필터)
+# 2. 클린아이
 # ─────────────────────────────────────────────
-def fetch_cleaneye_jobs(page):
-    base = "https://www.cleaneye.go.kr/user/empInfoList.do"
-    jobs = []
-    pg = 1
+def fetch_cleaneye_jobs():
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    try:
+        session.get("https://www.cleaneye.go.kr/index.jsp", timeout=15)
+    except Exception as e:
+        print(f"[cleaneye] 메인 접근 오류: {e}")
 
-    while True:
-        url = f"{base}?pageIndex={pg}&searchCondition=organNm&searchKeyword=%EC%9D%98%EC%A0%95%EB%B6%80%EB%8F%84%EC%8B%9C%EA%B3%B5%EC%82%AC"
+    url = "https://www.cleaneye.go.kr/user/empInfoList.do"
+    jobs = []
+
+    for pg in range(1, 20):
+        params = {
+            "pageIndex": pg,
+            "searchCondition": "organNm",
+            "searchKeyword": "의정부도시공사",
+        }
         try:
-            page.goto(url, timeout=20000)
-            page.wait_for_load_state("networkidle", timeout=15000)
-        except PWTimeout:
-            print(f"[cleaneye] 페이지 {pg} 타임아웃")
+            res = session.get(url, params=params, timeout=20)
+            res.raise_for_status()
+        except Exception as e:
+            print(f"[cleaneye] 페이지 {pg} 오류: {e}")
             break
 
-        rows = page.query_selector_all("table tbody tr")
+        soup = BeautifulSoup(res.text, "html.parser")
+        rows = soup.select("table tbody tr")
         if not rows:
             break
 
-        new_found = False
+        stop = False
         for row in rows:
-            cells = row.query_selector_all("td")
-            if len(cells) < 3:
+            cols = row.find_all("td")
+            if len(cols) < 3:
                 continue
-            # 기관명 확인
-            org = cells[1].inner_text().strip() if len(cells) > 1 else ""
+            org = cols[1].get_text(strip=True)
             if "의정부도시공사" not in org:
                 continue
-            a_tag = row.query_selector("a")
-            title = (a_tag.inner_text().strip() if a_tag
-                     else cells[2].inner_text().strip())
+            a_tag = row.find("a")
+            title = a_tag.get_text(strip=True) if a_tag else cols[2].get_text(strip=True)
             date_text = ""
-            for cell in cells:
-                txt = cell.inner_text().strip()
+            for col in cols:
+                txt = col.get_text(strip=True)
                 if re.match(r"\d{4}[.\-/]\d{2}[.\-/]\d{2}", txt):
                     date_text = txt
                     break
+
+            # 날짜 필터
+            post_date = parse_date(date_text)
+            if post_date and post_date < FILTER_FROM:
+                stop = True
+                break
+
             if title:
                 jobs.append({"title": title, "date": date_text})
-                new_found = True
 
-        if not new_found:
+        if stop:
             break
-        pg += 1
 
-    print(f"[cleaneye] 수집: {len(jobs)}건")
+    print(f"[cleaneye] 수집: {len(jobs)}건 (2026-01-01 이후)")
     return jobs
 
 
@@ -152,10 +184,8 @@ def send_email(only_uiuc, only_cleaneye):
     html = f"""
 <html><body style="font-family:sans-serif;font-size:14px;color:#333;line-height:1.6">
 <h2 style="color:#c0392b">🚨 채용공고 불일치 감지</h2>
-<p>점검 일시: <b>{now}</b></p><hr>
-
-<h3 style="color:#e67e22">📌 홈페이지에만 있는 공고
-  <small style="color:#888">({len(only_uiuc)}건) → 클린아이 등록 필요</small></h3>
+<p>점검 일시: <b>{now}</b> / 비교 기간: 2026-01-01 이후</p><hr>
+<h3 style="color:#e67e22">📌 홈페이지에만 있는 공고 ({len(only_uiuc)}건) → 클린아이 등록 필요</h3>
 <table style="border-collapse:collapse;width:100%">
   <thead><tr style="background:#fef9e7">
     <th style="padding:6px 8px;border:1px solid #ddd;text-align:left">제목</th>
@@ -163,9 +193,7 @@ def send_email(only_uiuc, only_cleaneye):
   </tr></thead>
   <tbody>{make_rows(only_uiuc)}</tbody>
 </table><br>
-
-<h3 style="color:#2980b9">📌 클린아이에만 있는 공고
-  <small style="color:#888">({len(only_cleaneye)}건) → 홈페이지 확인 필요</small></h3>
+<h3 style="color:#2980b9">📌 클린아이에만 있는 공고 ({len(only_cleaneye)}건) → 홈페이지 확인 필요</h3>
 <table style="border-collapse:collapse;width:100%">
   <thead><tr style="background:#eaf4fb">
     <th style="padding:6px 8px;border:1px solid #ddd;text-align:left">제목</th>
@@ -197,28 +225,16 @@ def send_email(only_uiuc, only_cleaneye):
 def main():
     print("=" * 50)
     print(f"채용공고 점검 시작: {datetime.now()}")
+    print(f"비교 기준: {FILTER_FROM} 이후")
     print("=" * 50)
 
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
-        ctx = browser.new_context(
-            locale="ko-KR",
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
-        )
-        page = ctx.new_page()
-
-        uiuc_jobs     = fetch_uiuc_jobs(page)
-        cleaneye_jobs = fetch_cleaneye_jobs(page)
-        browser.close()
-
+    uiuc_jobs     = fetch_uiuc_jobs()
+    cleaneye_jobs = fetch_cleaneye_jobs()
     only_uiuc, only_cleaneye = compare_jobs(uiuc_jobs, cleaneye_jobs)
 
     report = {
         "checked_at": datetime.now().isoformat(),
+        "filter_from": str(FILTER_FROM),
         "uiuc_total": len(uiuc_jobs),
         "cleaneye_total": len(cleaneye_jobs),
         "only_in_uiuc": only_uiuc,
@@ -239,7 +255,6 @@ def main():
     else:
         print("\n❌ 불일치 감지 → 이메일 발송 중...")
         send_email(only_uiuc, only_cleaneye)
-
 
 if __name__ == "__main__":
     main()
