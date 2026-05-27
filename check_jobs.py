@@ -84,6 +84,8 @@ def fetch_uiuc_jobs():
             break
 
     print(f"[uiuc] 수집: {len(jobs)}건 (2026-01-01 이후)")
+    for j in jobs:
+        print(f"  [uiuc] {j['title']}")
     return jobs
 
 
@@ -103,7 +105,6 @@ def fetch_cleaneye_jobs():
         "Content-Type": "application/x-www-form-urlencoded",
     })
 
-    # 메인 페이지 방문으로 쿠키 획득
     try:
         session.get("https://www.cleaneye.go.kr/user/itemGongsi.do", timeout=15)
     except Exception as e:
@@ -157,6 +158,8 @@ def fetch_cleaneye_jobs():
             break
 
     print(f"[cleaneye] 수집: {len(jobs)}건 (2026-01-01 이후)")
+    for j in jobs:
+        print(f"  [cleaneye] {j['title']}")
     return jobs
 
 
