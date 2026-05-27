@@ -1,7 +1,6 @@
 """
 의정부도시공사 채용공고 일치 점검 스크립트
 2026-01-01 이후 게시글만 비교
-클린아이: POST HTML 방식 (empHireInfo.do)
 """
 
 import os
@@ -33,21 +32,36 @@ def parse_date(text):
 
 
 # ─────────────────────────────────────────────
-# 1. 의정부도시공사 홈페이지
+# 1. 의정부도시공사 홈페이지 (POST 방식)
 # ─────────────────────────────────────────────
 def fetch_uiuc_jobs():
     url = "https://www.uiuc.or.kr/companyNotice/employmentPage/employment/list.do"
     jobs = []
+    seen_titles = set()
     session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "ko-KR,ko;q=0.9",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Referer": url,
     })
 
     for pg in range(1, 20):
+        data = {
+            "controller": "",
+            "isDesc": "false",
+            "sortField": "a.SORT_ORDR DESC, NTT_NO",
+            "view": "",
+            "pageNum": pg,
+            "baseAction": "/companyNotice/employmentPage/employment/list.do",
+            "searchField0": "a.BBS_ID",
+            "searchKeyword0": "BBSMSTR_000000000079",
+            "searchField1": "NTT_SJ",
+            "searchKeyword1": "",
+        }
         try:
-            res = session.get(url, params={"pageIndex": pg}, timeout=20)
+            res = session.post(url, data=data, timeout=20)
             res.raise_for_status()
         except Exception as e:
             print(f"[uiuc] 오류: {e}")
@@ -59,6 +73,7 @@ def fetch_uiuc_jobs():
             break
 
         stop = False
+        page_new = 0
         for row in rows:
             cols = row.find_all("td")
             if len(cols) < 2:
@@ -77,10 +92,13 @@ def fetch_uiuc_jobs():
                 stop = True
                 break
 
-            if title:
+            key = normalize(title)
+            if title and key not in seen_titles:
+                seen_titles.add(key)
                 jobs.append({"title": title.strip(), "date": date_text})
+                page_new += 1
 
-        if stop:
+        if stop or page_new == 0:
             break
 
     print(f"[uiuc] 수집: {len(jobs)}건 (2026-01-01 이후)")
@@ -95,6 +113,7 @@ def fetch_uiuc_jobs():
 def fetch_cleaneye_jobs():
     url = "https://www.cleaneye.go.kr/user/empHireInfo.do"
     jobs = []
+    seen_titles = set()
     session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -131,7 +150,7 @@ def fetch_cleaneye_jobs():
             break
 
         stop = False
-        new_found = False
+        page_new = 0
         for row in rows:
             cols = row.find_all("td")
             if len(cols) < 2:
@@ -150,11 +169,13 @@ def fetch_cleaneye_jobs():
                 stop = True
                 break
 
-            if title:
+            key = normalize(title)
+            if title and key not in seen_titles:
+                seen_titles.add(key)
                 jobs.append({"title": title.strip(), "date": date_text})
-                new_found = True
+                page_new += 1
 
-        if stop or not new_found:
+        if stop or page_new == 0:
             break
 
     print(f"[cleaneye] 수집: {len(jobs)}건 (2026-01-01 이후)")
