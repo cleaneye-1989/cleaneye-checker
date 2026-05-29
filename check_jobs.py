@@ -17,7 +17,7 @@ EMAIL_FROM  = os.environ["EMAIL_FROM"]
 EMAIL_TO    = os.environ["EMAIL_TO"]
 EMAIL_PASS  = os.environ["EMAIL_PASS"]
 
-FILTER_FROM = datetime(2026, 1, 1).date()
+FILTER_FROM = datetime(2026, 6, 1).date()
 
 def normalize(title):
     title = re.sub(r"\s+", "", title)
