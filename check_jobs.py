@@ -249,6 +249,30 @@ def send_email(only_uiuc, only_cleaneye):
     print(f"이메일 발송 완료 → {EMAIL_TO}")
 
 
+
+# ─────────────────────────────────────────────
+# 4-2. 오류 알림 이메일
+# ─────────────────────────────────────────────
+def send_error_email():
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    subject = f"[점검 오류] 클린아이 접속 실패 – {now}"
+    html = f"""
+<html><body style="font-family:sans-serif;font-size:14px;color:#333">
+<h2 style="color:#e67e22">⚠️ 클린아이 접속 오류</h2>
+<p>점검 일시: <b>{now}</b></p>
+<p>클린아이(cleaneye.go.kr) 서버 접속이 실패하여 채용공고 비교를 수행하지 못했습니다.</p>
+<p>잠시 후 수동으로 확인해주세요.</p>
+</body></html>"""
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = EMAIL_FROM
+    msg["To"]      = EMAIL_TO
+    msg.attach(MIMEText(html, "html", "utf-8"))
+    with smtplib.SMTP_SSL("smtp.daum.net", 465) as s:
+        s.login(EMAIL_FROM, EMAIL_PASS)
+        s.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
+    print(f"오류 알림 발송 완료 → {EMAIL_TO}")
+
 # ─────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────
@@ -260,6 +284,13 @@ def main():
 
     uiuc_jobs     = fetch_uiuc_jobs()
     cleaneye_jobs = fetch_cleaneye_jobs()
+
+    # 클린아이 접속 실패 시 이메일 발송 중단
+    if len(cleaneye_jobs) == 0 and len(uiuc_jobs) > 0:
+        print("\n⚠️ 클린아이 접속 오류 → 비교 중단")
+        send_error_email()
+        return
+
     only_uiuc, only_cleaneye = compare_jobs(uiuc_jobs, cleaneye_jobs)
 
     report = {
